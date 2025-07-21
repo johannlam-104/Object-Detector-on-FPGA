@@ -5,11 +5,11 @@ In development, done on Nexys A7
 The aim for this project is to detect a red object and overlay a green crosshair over ov7670 camera feed, and be displayed on a HDMI monitor using TMDS encoding
 
 ### Features:
-RGB444 thresholding
-3x3 convolution kernels
-centroid calculation
-HDMI (TMDS Encoding)
-axi stream interface enabling handshaking of pixel data
+-RGB444 thresholding
+-3x3 convolution kernels
+-centroid calculation
+-HDMI (TMDS Encoding)
+-axi stream interface enabling handshaking of pixel data
 
 ### Block Diagrams
 ## Processing overview
