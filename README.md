@@ -11,3 +11,5 @@ The aim for this project is to detect a red object and overlay a green crosshair
 -HDMI (TMDS Encoding)
 
 ### Block Diagrams
+## Processing overview
+<img width="863" height="398" alt="image" src="https://github.com/user-attachments/assets/b5ec4725-845f-411c-bbf8-6b2e76755f35" />
