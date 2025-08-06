@@ -17,5 +17,6 @@ The aim for this project is to detect a red object and overlay a green crosshair
 
 
 ## New architecture
-<img width="753" height="273" alt="image" src="https://github.com/user-attachments/assets/c8a80c85-481e-4bcf-96ee-2940b5526825" />
+<img width="1747" height="684" alt="Block Diagram" src="https://github.com/user-attachments/assets/c7b9ef6d-8092-4287-86e4-ca9600ac11a8" />
+
 
