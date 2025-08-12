@@ -13,7 +13,6 @@
 //
 //
 // MODIFICATIONS: ADDED LAST ROW PADDING WHICH WAS MISSING FROM ORIGINAL MODULE
-//
 module ps_kernel_control 
     #(
     parameter LINE_LENGTH = 640,
@@ -29,7 +28,7 @@ module ps_kernel_control
     input  wire                      i_valid, //
     output reg                       o_req,   // asserted when ready for more data
 
-    // Gaussian MAC interface
+    // RED Pixel kernel interface
     output reg  [(3*DATA_WIDTH-1):0] o_r0_data, 
     output reg  [(3*DATA_WIDTH-1):0] o_r1_data,
     output reg  [(3*DATA_WIDTH-1):0] o_r2_data,
@@ -76,7 +75,7 @@ module ps_kernel_control
         
     
     // keeps track of 'target' read buffer
-    reg  [2:0]  r_lineBuffer_sel, nxt_r_lineBuffer_sel;   
+    reg  [1:0]  r_lineBuffer_sel, nxt_r_lineBuffer_sel;   
                 
     
     // FSM
@@ -251,25 +250,28 @@ module ps_kernel_control
             case (r_lineBuffer_sel)
                 0: begin
                     lineBuffer_rd[2] = 0;
-                    lineBuffer_rd[3] = 0;
+                    lineBuffer_rd[1] = 0;
                     o_r0_data = lineBuffer3_rdata;
                     o_r1_data = lineBuffer0_rdata;
                     o_r2_data = lineBuffer0_rdata; // padded
                 end
                 1: begin
                     lineBuffer_rd[3] = 0;
+                    lineBuffer_rd[2] = 0;
                     o_r0_data = lineBuffer0_rdata;
                     o_r1_data = lineBuffer1_rdata;
                     o_r2_data = lineBuffer1_rdata; // padded
                 end
                 2: begin
                     lineBuffer_rd[0] = 0;
+                    lineBuffer_rd[3] = 0;
                     o_r0_data = lineBuffer1_rdata;
                     o_r1_data = lineBuffer2_rdata;
                     o_r2_data = lineBuffer2_rdata; // padded
                 end
                 3: begin
                     lineBuffer_rd[1] = 0;
+                    lineBuffer_rd[0] = 0;
                     o_r0_data = lineBuffer2_rdata;
                     o_r1_data = lineBuffer3_rdata;
                     o_r2_data = lineBuffer3_rdata; // padded
