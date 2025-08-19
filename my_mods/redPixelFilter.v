@@ -19,7 +19,7 @@
 // 
 //////////////////////////////////////////////////////////////////////////////////
 
-
+// 2-cycle latency
 module ps_redPixelFilter(
     input wire i_clk,
     input wire i_rstn,
@@ -36,41 +36,37 @@ module ps_redPixelFilter(
     
     reg [8:0] kernel;
     
-    wire [2:0] sum;
+    wire [3:0] sum;
     assign sum  = kernel[0] + kernel[1] + kernel[2] + kernel[3] + kernel[5] + kernel[6] + kernel[7] + kernel[8];
     
-    always@(posedge i_clk)begin
-        if (~i_rstn)begin
-            kernel <= 9'b0;
-            o_red_pixel_valid <= 0;
-            o_valid <= 0;
-        end
+    always @(posedge i_clk) begin
+        if (!i_rstn) begin
+            kernel            <= 9'b0;
+            o_red_pixel_valid <= 1'b0;
+            o_valid           <= 1'b0;
+        end 
         else begin
-            
-            kernel [0] <= i_r0_data[0];
-            kernel [1] <= i_r0_data[1];
-            kernel [2] <= i_r0_data[2];
-            kernel [3] <= i_r1_data[0];
-            kernel [4] <= i_r1_data[1];
-            kernel [5] <= i_r1_data[2];
-            kernel [6] <= i_r2_data[0];
-            kernel [7] <= i_r2_data[1];
-            kernel [8] <= i_r2_data[2];
-            
-            if ( i_valid)begin
-                if (kernel[4] && (sum >= 3'd5))begin
-                    o_red_pixel_valid <= 1'b1;
-                    o_valid <= 1'b1;
-                end
-            
-                else begin
-                    o_red_pixel_valid <= 0;
-                    o_valid <= 1'b1;
-                end
+            // stage 1: capture neighborhood regardless of i_valid
+            kernel[0] <= i_r0_data[0];
+            kernel[1] <= i_r0_data[1];
+            kernel[2] <= i_r0_data[2];
+            kernel[3] <= i_r1_data[0];
+            kernel[4] <= i_r1_data[1];
+            kernel[5] <= i_r1_data[2];
+            kernel[6] <= i_r2_data[0];
+            kernel[7] <= i_r2_data[1];
+            kernel[8] <= i_r2_data[2];
+
+            // stage 2: produce result only when upstream says window is valid
+            if (i_valid) begin
+                o_valid <= 1'b1;
+                // require center pixel set and >=5 neighbors (excluding center)
+                o_red_pixel_valid <= (kernel[4] && (sum >= 4'd5));
+            end 
+            else begin
+                o_valid           <= 1'b0;
+                o_red_pixel_valid <= 1'b0;
             end
-         o_red_pixel_valid <= 0;
-         o_valid <= 0;
-            
-        end         
+        end
     end    
 endmodule
