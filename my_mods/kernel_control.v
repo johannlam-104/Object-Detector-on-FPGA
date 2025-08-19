@@ -1,217 +1,172 @@
+`timescale 1ns / 1ps
 // module: ps_kernel_control
 //
-// This module stores incoming data in 4x line buffers. 
+// 4 line buffers. Reads 3 rows per column (2 at top/bottom due to padding).
+// Uses a global fill counter that matches actual reads per cycle.
 //
-// It reads three line buffers at a time and feeds that data
-// to the red pixel filter block.
+// Default DATA_WIDTH=1 for 1-bit pixels.
 //
-// The fourth line buffer is pre-loaded while the other three are
-// being read from.
-//
-// It also has a request flag that indicates it needs data to write
-// to the next line buffer.
-//
-//
-// MODIFICATIONS: ADDED LAST ROW PADDING WHICH WAS MISSING FROM ORIGINAL MODULE
-module ps_kernel_control 
-    #(
+module ps_kernel_control
+#(
     parameter LINE_LENGTH = 640,
     parameter LINE_COUNT  = 480,
-    parameter DATA_WIDTH  = 1
-    )
-    (
-    input  wire                      i_clk,   // input clock
-    input  wire                      i_rstn,  // sync active low reset
-       
-    // Data in interface   
-    input  wire [DATA_WIDTH-1:0]     i_data,  // 
-    input  wire                      i_valid, //
-    output reg                       o_req,   // asserted when ready for more data
+    parameter DATA_WIDTH  = 1,
+    parameter CLAMP_EDGES = 1 //1 = clamp, 0 = wrap
+)
+(
+    input  wire                      i_clk,
+    input  wire                      i_rstn,  // sync active-low
 
-    // RED Pixel kernel interface
-    output reg  [(3*DATA_WIDTH-1):0] o_r0_data, 
+    // Input stream
+    input  wire [DATA_WIDTH-1:0]     i_data,
+    input  wire                      i_valid,
+    output reg                       o_req,   // request more input when high
+
+    // 3× window outputs (top/mid/bottom rows for current column)
+    output reg  [(3*DATA_WIDTH-1):0] o_r0_data,
     output reg  [(3*DATA_WIDTH-1):0] o_r1_data,
     output reg  [(3*DATA_WIDTH-1):0] o_r2_data,
     output reg                       o_valid
-    );
+);
 
-//
+    // Next-state
     reg         nxt_req;
     reg         nxt_o_valid;
 
-// LINE BUFFER I/O 
-    reg  [3:0]  lineBuffer_wr;     // line buffer write enables
-    reg  [3:0]  lineBuffer_rd;     // line buffer read enables
-    //
-    wire [(3*DATA_WIDTH-1):0] lB0_rdata;
-    wire [(3*DATA_WIDTH-1):0] lB1_rdata;
-    wire [(3*DATA_WIDTH-1):0] lB2_rdata;
-    wire [(3*DATA_WIDTH-1):0] lB3_rdata;
-    //
+    // Line buffer enables
+    reg  [3:0]  lineBuffer_wr;
+    reg  [3:0]  lineBuffer_rd;
+
+    // Line buffer read buses (3*DATA_WIDTH each)
+    wire [(3*DATA_WIDTH-1):0] lB0_rdata, lB1_rdata, lB2_rdata, lB3_rdata;
+
+    // Windowed/padded versions per row
     reg  [(3*DATA_WIDTH-1):0] lineBuffer0_rdata;
     reg  [(3*DATA_WIDTH-1):0] lineBuffer1_rdata;
     reg  [(3*DATA_WIDTH-1):0] lineBuffer2_rdata;
     reg  [(3*DATA_WIDTH-1):0] lineBuffer3_rdata;
 
+    // Write-side trackers
+    reg  [$clog2(LINE_LENGTH):0]  w_pixelCounter;
+    reg  [1:0]                    w_lineBuffer_sel;
 
-// LINE BUFFER WRITE LOGIC
-    reg  [$clog2(LINE_LENGTH):0]  w_pixelCounter; // counts pixels written to single buffer
-    reg  [1:0]  w_lineBuffer_sel; // keeps track of buffer to write to
-     
-// LINE BUFFER READ LOGIC
-    // total fill level of all buffers
-    reg  [$clog2(3*LINE_LENGTH):0] r_fill;        
+    // Global fill (sum across all 4 buffers)
+    localparam integer FILL_MAX = 4*LINE_LENGTH;
+    reg  [$clog2(FILL_MAX+1)-1:0] r_fill;
 
-    // counts pixels read from current buffer      
-    reg  [$clog2(LINE_LENGTH):0] r_pixelCounter,      
-                                   nxt_r_pixelCounter; 
-    
-    // counts # of lines processed
-    reg  [$clog2(LINE_COUNT):0] r_lineCounter,       
-                                  nxt_r_lineCounter;
-    
-    // overall buffer read enable
-    reg r_lineBuffer_rd_en, nxt_r_lineBuffer_rd_en;      
-        
-    
-    // keeps track of 'target' read buffer
-    reg  [1:0]  r_lineBuffer_sel, nxt_r_lineBuffer_sel;   
-                
-    
+    // Read-side trackers
+    reg  [$clog2(LINE_LENGTH):0]  r_pixelCounter, nxt_r_pixelCounter;  // columns within a line
+    reg  [$clog2(LINE_COUNT):0]   r_lineCounter,  nxt_r_lineCounter;   // which image row
+    reg                           r_lineBuffer_rd_en, nxt_r_lineBuffer_rd_en;
+    reg  [1:0]                    r_lineBuffer_sel,    nxt_r_lineBuffer_sel;
+
     // FSM
     reg [1:0]   RSTATE, NEXT_RSTATE;
     localparam  RSTATE_IDLE     = 0,
                 RSTATE_PREFETCH = 1,
                 RSTATE_ACTIVE   = 2;
 
-//
-// LINE BUFFER WRITE LOGIC
-//
-    // count every linebuffer write
-    always@(posedge i_clk) begin
-        if(!i_rstn) begin
+    // -------------------------
+    // WRITE LOGIC
+    // -------------------------
+    // Gate writes by o_req 
+    wire accept_write = o_req && i_valid;
+
+    always @(posedge i_clk) begin
+        if (!i_rstn) begin
             w_pixelCounter <= 0;
-        end 
-        else begin
-            if(i_valid) begin
-                w_pixelCounter <= (w_pixelCounter == LINE_LENGTH-1) ? 0:w_pixelCounter+1;
-            end
+        end
+        else if (accept_write) begin
+            w_pixelCounter <= (w_pixelCounter == LINE_LENGTH-1) ? 0 : (w_pixelCounter + 1'b1);
         end
     end
 
-    // after writing a full line buffer, select the next line buffer
-    always@(posedge i_clk) begin
-        if(!i_rstn) begin
-            w_lineBuffer_sel <= 0;
+    always @(posedge i_clk) begin
+        if (!i_rstn) begin
+            w_lineBuffer_sel <= 2'd0;
         end
-        else begin
-            if( (w_pixelCounter == LINE_LENGTH-1) && (i_valid)) begin
-                if(w_lineBuffer_sel == 3) begin
-                    w_lineBuffer_sel <= 0;
-                end
-                else begin
-                    w_lineBuffer_sel <= w_lineBuffer_sel+1;
-                end
-            end
+        else if ((w_pixelCounter == LINE_LENGTH-1) && accept_write) begin
+            w_lineBuffer_sel <= (w_lineBuffer_sel == 2'd3) ? 2'd0 : (w_lineBuffer_sel + 2'd1);
         end
     end
 
-    // line buffer i/o
-    always@* begin
-        lineBuffer_wr = 0;
-        lineBuffer_wr[w_lineBuffer_sel] = i_valid;
+    always @* begin
+        lineBuffer_wr = 4'b0000;
+        lineBuffer_wr[w_lineBuffer_sel] = accept_write;
     end
 
-//
-// LINE BUFFER READ ENABLE LOGIC 
-//
-    // keep track of total # of pixels in line buffers
-    always@(posedge i_clk) begin
-        if(!i_rstn) begin
-            r_fill <= 0;
-        end
-        else begin
+    // -------------------------
+    // FILL ACCOUNTING
+    // -------------------------
+    // Popcount of reads (formed after READ SELECT)
+    wire [1:0] rd_cnt = lineBuffer_rd[0] + lineBuffer_rd[1]
+                      + lineBuffer_rd[2] + lineBuffer_rd[3];
 
-            // write and not reading
-            if(i_valid && !r_lineBuffer_rd_en) begin
-                r_fill <= r_fill + 1;
-            end
+    // One write per cycle max
+    wire [1:0] wr_cnt = accept_write ? 2'd1 : 2'd0;
 
-            // not writing and read
-            else if(!i_valid && r_lineBuffer_rd_en) begin
-                r_fill <= r_fill - 1;
-            end
-        end
+    always @(posedge i_clk) begin
+        if (!i_rstn) r_fill <= 0;
+        else         r_fill <= r_fill + wr_cnt - rd_cnt;
     end
 
-
-
-    // read from line buffers only when three lines are full
-    always@* begin
+    // -------------------------
+    // READ CONTROL FSM
+    // -------------------------
+    always @* begin
         nxt_req                 = o_req;
         nxt_o_valid             = r_lineBuffer_rd_en;
-        nxt_r_lineBuffer_rd_en  = 0;
+        nxt_r_lineBuffer_rd_en  = 1'b0;
         nxt_r_pixelCounter      = r_pixelCounter;
         nxt_r_lineCounter       = r_lineCounter;
         nxt_r_lineBuffer_sel    = r_lineBuffer_sel;
         NEXT_RSTATE             = RSTATE;
 
-        case(RSTATE)
-
-        // RSTATE_IDLE: 
-        // If there is 3 lines worth of pixel data present, 
-        // begin reading from line buffers
+        case (RSTATE)
             RSTATE_IDLE: begin
                 nxt_r_pixelCounter = 0;
-                if(r_fill == (3*LINE_LENGTH)) begin
-                    nxt_req                 = 0;
-                    nxt_r_lineBuffer_rd_en  = 1;
+                if (r_fill >= (3*LINE_LENGTH)) begin
+                    nxt_req                 = 1'b0;
+                    nxt_r_lineBuffer_rd_en  = 1'b1;
                     NEXT_RSTATE             = RSTATE_PREFETCH;
-                end
+                end 
                 else begin
-                    nxt_req                = 1;
-                    nxt_r_lineBuffer_rd_en = 0;
+                    nxt_req                 = 1'b1;
+                    nxt_r_lineBuffer_rd_en  = 1'b0;
                 end
             end
 
-        // RSTATE_PREFETCH:
-        // Account for total of 2 cycles of read latency for
-        // the linebuffer reads
+            // account for 1 cycle of read latency
             RSTATE_PREFETCH: begin
-                nxt_r_lineBuffer_rd_en = 1;
-                NEXT_RSTATE            = RSTATE_ACTIVE; 
+                nxt_r_lineBuffer_rd_en = 1'b1;
+                NEXT_RSTATE            = RSTATE_ACTIVE;
             end
 
-        // RSTATE_ACTIVE:
-        // If a line of pixels has been read:
-        //    - select next line buffer to read from
-        //    - request more data
             RSTATE_ACTIVE: begin
-                nxt_r_pixelCounter = r_pixelCounter + 1;
-                if(r_pixelCounter >= LINE_LENGTH-2) begin
-                    nxt_req                 = 1;
-                    nxt_r_lineBuffer_rd_en  = 0;
-                    nxt_r_lineCounter       = (r_lineCounter == LINE_COUNT-1) ? 0:r_lineCounter+1;                               
-                    nxt_r_lineBuffer_sel    = (r_lineBuffer_sel == 3) ? 0:r_lineBuffer_sel+1;                         
+                nxt_r_pixelCounter = r_pixelCounter + 1'b1;
+                if (r_pixelCounter >= LINE_LENGTH-2) begin
+                    nxt_req                 = 1'b1;
+                    nxt_r_lineBuffer_rd_en  = 1'b0;
+                    nxt_r_lineCounter       = (r_lineCounter == LINE_COUNT-1) ? 0 : (r_lineCounter + 1'b1);
+                    nxt_r_lineBuffer_sel    = (r_lineBuffer_sel == 2'd3) ? 2'd0 : (r_lineBuffer_sel + 2'd1);
                     NEXT_RSTATE             = RSTATE_IDLE;
-                end
+                end 
                 else begin
-                    nxt_req                = 0;
-                    nxt_r_lineBuffer_rd_en = 1;
+                    nxt_req                 = 1'b0;
+                    nxt_r_lineBuffer_rd_en  = 1'b1;
                 end
             end
         endcase
     end
 
-    // registers
-    always@(posedge i_clk) begin
-        if(!i_rstn) begin
-            o_req              <= 0;
-            o_valid            <= 0;
-            r_lineBuffer_rd_en <= 0;
+    always @(posedge i_clk) begin
+        if (!i_rstn) begin
+            o_req              <= 1'b0;
+            o_valid            <= 1'b0;
+            r_lineBuffer_rd_en <= 1'b0;
             r_pixelCounter     <= 0;
             r_lineCounter      <= 0;
-            r_lineBuffer_sel   <= 0;
+            r_lineBuffer_sel   <= 2'd0;
             RSTATE             <= RSTATE_IDLE;
         end 
         else begin
@@ -225,87 +180,79 @@ module ps_kernel_control
         end
     end
 
-//
-// LINE BUFFER READ SELECT LOGIC
-//
-    // assign different data to outputs based on what current row is
-    always@* begin
+    // -------------------------
+    // READ SELECT + OUTPUT WINDOWS
+    // -------------------------
+    always @* begin
         lineBuffer_rd = {4{r_lineBuffer_rd_en}};
         o_r0_data     = 0;
         o_r1_data     = 0;
         o_r2_data     = 0;
 
-        // first row of image
-        if(r_lineCounter == 0) begin
-            lineBuffer_rd[2] = 0;
-            lineBuffer_rd[3] = 0;
-            o_r0_data        = lineBuffer0_rdata;
-            o_r1_data        = lineBuffer0_rdata;
-            o_r2_data        = lineBuffer1_rdata;
+        // First image row (top padding → 2 reads)
+        if (r_lineCounter == 0) begin
+            lineBuffer_rd[2] = 1'b0;
+            lineBuffer_rd[3] = 1'b0;
+            o_r0_data        = lineBuffer0_rdata; // top padded with itself
+            o_r1_data        = lineBuffer0_rdata; // middle = first row
+            o_r2_data        = lineBuffer1_rdata; // bottom = second row
         end
-
-        // last row of image
-        
-         else if (r_lineCounter == LINE_COUNT - 1) begin
+        // Last image row (bottom padding → 2 reads)
+        else if (r_lineCounter == LINE_COUNT - 1) begin
             case (r_lineBuffer_sel)
-                0: begin
-                    lineBuffer_rd[2] = 0;
-                    lineBuffer_rd[1] = 0;
+                2'd0: begin
+                    lineBuffer_rd[2] = 1'b0; 
+                    lineBuffer_rd[1] = 1'b0;
                     o_r0_data = lineBuffer3_rdata;
                     o_r1_data = lineBuffer0_rdata;
                     o_r2_data = lineBuffer0_rdata; // padded
                 end
-                1: begin
-                    lineBuffer_rd[3] = 0;
-                    lineBuffer_rd[2] = 0;
+                2'd1: begin
+                    lineBuffer_rd[3] = 1'b0; 
+                    lineBuffer_rd[2] = 1'b0;
                     o_r0_data = lineBuffer0_rdata;
                     o_r1_data = lineBuffer1_rdata;
                     o_r2_data = lineBuffer1_rdata; // padded
                 end
-                2: begin
-                    lineBuffer_rd[0] = 0;
-                    lineBuffer_rd[3] = 0;
+                2'd2: begin
+                    lineBuffer_rd[0] = 1'b0; 
+                    lineBuffer_rd[3] = 1'b0;
                     o_r0_data = lineBuffer1_rdata;
                     o_r1_data = lineBuffer2_rdata;
                     o_r2_data = lineBuffer2_rdata; // padded
                 end
-                3: begin
-                    lineBuffer_rd[1] = 0;
-                    lineBuffer_rd[0] = 0;
+                2'd3: begin
+                    lineBuffer_rd[1] = 1'b0; 
+                    lineBuffer_rd[0] = 1'b0;
                     o_r0_data = lineBuffer2_rdata;
                     o_r1_data = lineBuffer3_rdata;
                     o_r2_data = lineBuffer3_rdata; // padded
                 end
             endcase
-        end 
-
-         
+        end
+        // Middle rows (3 reads)
         else begin
-            case(r_lineBuffer_sel)
-
-                0: begin
-                    lineBuffer_rd[2] = 0;
+            case (r_lineBuffer_sel)
+                2'd0: begin
+                    lineBuffer_rd[2] = 1'b0;
                     o_r0_data        = lineBuffer3_rdata;
                     o_r1_data        = lineBuffer0_rdata;
                     o_r2_data        = lineBuffer1_rdata;
                 end
-    
-                1: begin
-                    lineBuffer_rd[3] = 0;
+                2'd1: begin
+                    lineBuffer_rd[3] = 1'b0;
                     o_r0_data        = lineBuffer0_rdata;
                     o_r1_data        = lineBuffer1_rdata;
                     o_r2_data        = lineBuffer2_rdata;
                 end
-    
-                2: begin
-                    lineBuffer_rd[0] = 0;
+                2'd2: begin
+                    lineBuffer_rd[0] = 1'b0;
                     o_r0_data        = lineBuffer1_rdata;
                     o_r1_data        = lineBuffer2_rdata;
                     o_r2_data        = lineBuffer3_rdata;
                 end
-    
-                3: begin
-                    lineBuffer_rd[1] = 0;
+                2'd3: begin
+                    lineBuffer_rd[1] = 1'b0;
                     o_r0_data        = lineBuffer2_rdata;
                     o_r1_data        = lineBuffer3_rdata;
                     o_r2_data        = lineBuffer0_rdata;
@@ -316,104 +263,73 @@ module ps_kernel_control
 
     localparam WORD3_INDEX = 2*DATA_WIDTH;
 
-// Output Combinatorial logic
-// assign different data to outputs based on what current column is
-    always@* begin
-        case(r_pixelCounter)
-            default: begin
-                lineBuffer0_rdata = lB0_rdata;
-                lineBuffer1_rdata = lB1_rdata;
-                lineBuffer2_rdata = lB2_rdata;
-                lineBuffer3_rdata = lB3_rdata;
-            end
-
-            // catch the beginning of each row
-            0: begin
-                lineBuffer0_rdata = { {2{lB0_rdata[DATA_WIDTH+:DATA_WIDTH]}}, 
-                                       lB0_rdata[0+:DATA_WIDTH]};
-
-                lineBuffer1_rdata = { {2{lB1_rdata[DATA_WIDTH+:DATA_WIDTH]}}, 
-                                       lB1_rdata[0+:DATA_WIDTH]};
-
-                lineBuffer2_rdata = { {2{lB2_rdata[DATA_WIDTH+:DATA_WIDTH]}}, 
-                                       lB2_rdata[0+:DATA_WIDTH]};
-
-                lineBuffer3_rdata = { {2{lB3_rdata[DATA_WIDTH+:DATA_WIDTH]}}, 
-                                       lB3_rdata[0+:DATA_WIDTH]};
-            end
-
-            // catch end of each row
-            (LINE_LENGTH-1): begin
-                lineBuffer0_rdata = { lB0_rdata[(2*DATA_WIDTH)+:DATA_WIDTH], 
-                                    {2{lB0_rdata[DATA_WIDTH+:DATA_WIDTH]}} };
-
-                lineBuffer1_rdata = { lB1_rdata[(2*DATA_WIDTH)+:DATA_WIDTH], 
-                                    {2{lB1_rdata[DATA_WIDTH+:DATA_WIDTH]}} };
-
-                lineBuffer2_rdata = { lB2_rdata[(2*DATA_WIDTH)+:DATA_WIDTH], 
-                                    {2{lB2_rdata[DATA_WIDTH+:DATA_WIDTH]}} };
-
-                lineBuffer3_rdata = { lB3_rdata[(2*DATA_WIDTH)+:DATA_WIDTH], 
-                                    {2{lB3_rdata[DATA_WIDTH+:DATA_WIDTH]}} };
-            end
-        endcase
+    // output regular data, linebuffer module deals with padding along vertical edges
+    always @* begin
+        lineBuffer0_rdata = lB0_rdata;
+        lineBuffer1_rdata = lB1_rdata;
+        lineBuffer2_rdata = lB2_rdata;
+        lineBuffer3_rdata = lB3_rdata;
     end
 
-    ps_linebuffer
-    #(.LINE_LENGTH(LINE_LENGTH),
-      .DATA_WIDTH (DATA_WIDTH)) 
-    LINEBUF0_i (
-    .i_clk   (i_clk             ), 
-    .i_rstn  (i_rstn            ), // sync active low reset
-  
-    .i_wr    (lineBuffer_wr[0]  ), // write enable
-    .i_wdata (i_data            ), // 8-bit write data
-
-    .i_rd    (lineBuffer_rd[0]  ), // read enable
-    .o_rdata (lB0_rdata )          // 3 pixels of read data
+    // -------------------------
+    // LINE BUFFER INSTANCES
+    // -------------------------
+    ps_linebuffer #(
+        .LINE_LENGTH(LINE_LENGTH),
+        .DATA_WIDTH(DATA_WIDTH),
+        .CLAMP_EDGES(CLAMP_EDGES)
+    ) LINEBUF0_i (
+        .i_clk(i_clk), 
+        .i_rstn(i_rstn),
+        
+        .i_wr(lineBuffer_wr[0]), 
+        .i_wdata(i_data),
+        
+        .i_rd(lineBuffer_rd[0]), 
+        .o_rdata(lB0_rdata)
     );
-
-    ps_linebuffer
-    #(.LINE_LENGTH(LINE_LENGTH),
-      .DATA_WIDTH (DATA_WIDTH)) 
-    LINEBUF1_i (
-    .i_clk   (i_clk             ), 
-    .i_rstn  (i_rstn            ), // sync active low reset
-  
-    .i_wr    (lineBuffer_wr[1]  ), // write enable
-    .i_wdata (i_data            ), // 8-bit write data
-
-    .i_rd    (lineBuffer_rd[1]  ), // read enable
-    .o_rdata (lB1_rdata )          // 3 pixels of read data
-    );
-
-    ps_linebuffer
-    #(.LINE_LENGTH(LINE_LENGTH),
-      .DATA_WIDTH (DATA_WIDTH)) 
-    LINEBUF2_i (
-    .i_clk   (i_clk             ), 
-    .i_rstn  (i_rstn            ), // sync active low reset
-  
-    .i_wr    (lineBuffer_wr[2]  ), // write enable
-    .i_wdata (i_data            ), // 8-bit write data
-
-    .i_rd    (lineBuffer_rd[2]  ), // read enable
-    .o_rdata (lB2_rdata )          // 3 pixels of read data
-    );
-
-    ps_linebuffer
-    #(.LINE_LENGTH(LINE_LENGTH),
-      .DATA_WIDTH (DATA_WIDTH)) 
-    LINEBUF3_i (
-    .i_clk   (i_clk             ), 
-    .i_rstn  (i_rstn            ), // sync active low reset
-  
-    .i_wr    (lineBuffer_wr[3]  ), // write enable
-    .i_wdata (i_data            ), // 8-bit write data
-
-    .i_rd    (lineBuffer_rd[3]  ), // read enable
-    .o_rdata (lB3_rdata )          // 3 pixels of read data
-    );
-
     
+    ps_linebuffer #(
+        .LINE_LENGTH(LINE_LENGTH), 
+        .DATA_WIDTH(DATA_WIDTH),
+        .CLAMP_EDGES(CLAMP_EDGES)
+    ) LINEBUF1_i (
+        .i_clk(i_clk), 
+        .i_rstn(i_rstn),
+        
+        .i_wr(lineBuffer_wr[1]), 
+        .i_wdata(i_data),
+        
+        .i_rd(lineBuffer_rd[1]), 
+        .o_rdata(lB1_rdata)
+    );
+    ps_linebuffer #(
+        .LINE_LENGTH(LINE_LENGTH), 
+        .DATA_WIDTH(DATA_WIDTH),
+        .CLAMP_EDGES(CLAMP_EDGES)
+    ) LINEBUF2_i (
+        .i_clk(i_clk), 
+        .i_rstn(i_rstn),
+        
+        .i_wr(lineBuffer_wr[2]), 
+        .i_wdata(i_data),
+        
+        .i_rd(lineBuffer_rd[2]), 
+        .o_rdata(lB2_rdata)
+    );
+    ps_linebuffer #(
+        .LINE_LENGTH(LINE_LENGTH), 
+        .DATA_WIDTH(DATA_WIDTH),
+        .CLAMP_EDGES(CLAMP_EDGES)
+    ) LINEBUF3_i (
+        .i_clk(i_clk), 
+        .i_rstn(i_rstn),
+        
+        .i_wr(lineBuffer_wr[3]), 
+        .i_wdata(i_data),
+        
+        .i_rd(lineBuffer_rd[3]), 
+        .o_rdata(lB3_rdata)
+    );
+
 endmodule
