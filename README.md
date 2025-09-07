@@ -14,8 +14,8 @@ The aim for this project is to detect a red object and overlay a green crosshair
 ## Final Processing Core
 <img width="1747" height="684" alt="Block Diagram" src="https://github.com/user-attachments/assets/c7b9ef6d-8092-4287-86e4-ca9600ac11a8" />
 
-## Design Iteration
-This diagram had a fundamental error with muxing between the 2 data paths
+  ### Design Iteration
+####This diagram had a fundamental error with muxing between the 2 data paths
 <img width="863" height="398" alt="image" src="https://github.com/user-attachments/assets/b5ec4725-845f-411c-bbf8-6b2e76755f35" />
 
 
