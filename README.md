@@ -1,13 +1,7 @@
 # Red-Object-Detector-on-FPGA-Using-OV7670-Camera-and-HDMI-Output
-The aim for this project is to detect a red object and overlay a green crosshair over ov7670 camera feed, and be displayed on a HDMI monitor using TMDS encoding
+The aim for this project is to detect a red object and overlay a green crosshair over ov7670 camera feed, and be displayed on a VGA monitor via HDMI using TMDS encoding
 
-## This project builds on the open sourced HDMI video pipeline project linked [here](https://github.com/georgeyhere/FPGA-Video-Processing/tree/master). My modifications focused on real-time red object detection logic with the addition of a couple minor changes to open sourced modules. Unedited opened sourced code is in the src folder, my mods are in the my_mods folder.
-
-### Key Features:
--RGB444 thresholding
--3x3 convolution kernels
--centroid calculation
--HDMI (TMDS Encoding)
+## This project builds on the open sourced HDMI video pipeline project linked [here](https://github.com/georgeyhere/FPGA-Video-Processing/tree/master). My modifications focused on real-time red object detection logic with the addition of a couple minor changes to open sourced modules and an HDMI enable that allows the user to switch between HDMI and VGA display in case their board does not offer HDMI
 
 ## Block Diagrams
 
