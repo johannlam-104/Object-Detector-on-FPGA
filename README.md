@@ -15,6 +15,7 @@ The aim for this project is to detect a red object and overlay a green crosshair
 ## Camera module (open sourced)
 <img width="1117" height="618" alt="image" src="https://github.com/user-attachments/assets/bbcfe919-c518-4c60-bc8f-36ba054f5f2a" />
 
-## Display Interface (VGA and HDMI enable)
+## System Level Top
+<img width="1050" height="555" alt="image" src="https://github.com/user-attachments/assets/e3daba7e-b3a0-4db3-a586-effdbd144ab1" />
 
 
