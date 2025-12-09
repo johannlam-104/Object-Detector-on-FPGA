@@ -20,3 +20,4 @@ The aim for this project is to detect a red object and overlay a green crosshair
 
 ## Video Demo (Version 1.0)
 https://youtu.be/ILm-690KBs4 
+# will add ping pong buffering on the framebuffer CDC boundary to get rid of display shearing 
