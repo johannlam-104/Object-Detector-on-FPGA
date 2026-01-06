@@ -13,6 +13,7 @@ The aim for this project is to detect a red object and overlay a green crosshair
   <img width="863" height="398" alt="image" src="https://github.com/user-attachments/assets/b5ec4725-845f-411c-bbf8-6b2e76755f35" />
 
 ## Camera module (open sourced)
+## modifications: implemented AXI-Stream output
 <img width="1117" height="618" alt="image" src="https://github.com/user-attachments/assets/bbcfe919-c518-4c60-bc8f-36ba054f5f2a" />
 
 ## System Level Top
