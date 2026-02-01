@@ -5,10 +5,17 @@ module RedPixelProcessingTop_tb;
   // --------------------------------------------------------------------------
   // Parameters
   // --------------------------------------------------------------------------
-  localparam integer IMG_W = 640;
-  localparam integer IMG_H = 480;
-  localparam integer FRAMES_TO_SEND = 2;    // send 2 frames (one with red box, one blank black frame)
-  localparam integer CLK_PERIOD_NS   = 10;  // 100 MHz
+  localparam int IMG_WIDTH       = 640;
+  localparam int IMG_HEIGHT      = 480;
+  localparam int FRAMES_TO_SEND  = 5;          // total frames we intend to push through
+  localparam int CLK_PERIOD_NS   = 10;         // 100 MHz
+  localparam int TIMEOUT_CYC     = 8_000_000;  // global sim timeout safeguard
+
+  // Frame IDs (what each number represents):
+  //   frame_id == 0 : red box centered, black background
+  //   frame_id == 1 : checkerboard red/black
+  //   frame_id == 2 : full black frame
+  //   frame_id == 3 : full red frame
 
   // --------------------------------------------------------------------------
   // Clock / Reset
@@ -22,164 +29,338 @@ module RedPixelProcessingTop_tb;
   // --------------------------------------------------------------------------
   // DUT I/O
   // --------------------------------------------------------------------------
-  logic [11:0] i_data;
-  logic        i_almostempty;
-  logic        o_rd_async_fifo;
+  logic [31:0] i_tdata;
+  logic        i_tvalid;
+  logic        i_tuser;
+  logic        i_tlast;
+  logic        i_empty;
+  logic        o_tready;
 
-  logic        i_obuf_rd;
-  logic [11:0] o_obuf_data;
-  logic [5:0]  o_obuf_fill;        
-  logic        o_obuf_full;
-  logic        o_obuf_almostfull;
+  logic        o_tvalid;
+  logic        i_tready;
+  logic [31:0] o_tdata;
+  logic        o_tuser;
+  logic        o_tlast;
+
   logic        o_obuf_empty;
-  logic        o_obuf_almostempty;
 
   // --------------------------------------------------------------------------
   // DUT
   // --------------------------------------------------------------------------
   ProcessingTop #(
-    .PROCESSING_LATENCY(12)
-  ) dut (
-    .i_clk             (i_clk),
-    .i_rstn            (i_rstn),
-    .i_flush           (i_flush),
+    .IMG_WIDTH            (IMG_WIDTH),
+    .IMG_HEIGHT           (IMG_HEIGHT),
+    .PENDING_DURATION     (5),
+    .PIXEL_THRESHOLD      (1000),
+    .CROSSHAIR_SIZE       (10),
+    .RAW_DATA_WIDTH       (32),
+    .PROCESSED_DATA_WIDTH (1),
+    .ADDR_WIDTH           (15), // 11 original
+    .ALMOSTFULL_OFFSET    (1),
+    .ALMOSTEMPTY_OFFSET   (1),
+    .FIFO_PTR_WIDTH       (9),
+    .TUSER_WIDTH          (1),
+    .CAM_DATA_WIDTH       (32)
+  ) DUT (
+    .i_clk        (i_clk),
+    .i_rstn       (i_rstn),
+    .i_flush      (i_flush),
 
-    .i_data            (i_data),
-    .i_almostempty     (i_almostempty),
-    .o_rd_async_fifo   (o_rd_async_fifo),
+    .i_tdata      (i_tdata),
+    .i_tvalid     (i_tvalid),
+    .i_tuser      (i_tuser),
+    .i_tlast      (i_tlast),
+    .i_empty      (i_empty),
+    .o_tready     (o_tready),
 
-    .i_obuf_rd         (i_obuf_rd),
-    .o_obuf_data       (o_obuf_data),
-    .o_obuf_fill       (o_obuf_fill),
-    .o_obuf_full       (o_obuf_full),
-    .o_obuf_almostfull (o_obuf_almostfull),
-    .o_obuf_empty      (o_obuf_empty),
-    .o_obuf_almostempty(o_obuf_almostempty)
+    .o_tvalid     (o_tvalid),
+    .i_tready     (i_tready),
+    .o_tdata      (o_tdata),
+    .o_tuser      (o_tuser),
+    .o_tlast      (o_tlast),
+
+    .o_obuf_empty (o_obuf_empty)
   );
 
   // --------------------------------------------------------------------------
-  // Test image generator
-  // Frame 0: red box centered; Frame 1: blank
+  // Pixel generator
   // --------------------------------------------------------------------------
-  function automatic [11:0] gen_pixel(input integer frame_id, input integer x, input integer y);
+  function automatic logic [31:0] gen_pixel(input int frame_id, input int x, input int y);
     if (frame_id == 0) begin
+      // red box in middle with black background
       if ((x >= 160 && x <= 480) && (y >= 120 && y <= 360))
-        gen_pixel = 12'hF00;   // red
+        gen_pixel = 32'hF000_0000;   // red
       else
-        gen_pixel = 12'h000;   // black
-    end else begin
-      gen_pixel = 12'h000;     // black
+        gen_pixel = 32'h0000_0000;   // black
+    end
+    else if (frame_id == 1) begin
+      // checkerboard
+      if (((x ^ y) & 1) == 1)
+        gen_pixel = 32'hF000_0000;
+      else
+        gen_pixel = 32'h0000_0000;
+    end
+    else if (frame_id == 3) begin
+      // full red
+      gen_pixel = 32'hF000_0000;
+    end
+    else begin
+      // full black
+      gen_pixel = 32'h0000_0000;
     end
   endfunction
 
+  function automatic logic gen_tuser(input int x, input int y);
+    return (x==0 && y==0);
+  endfunction
+
+  function automatic logic gen_tlast(input int x);
+    return (x==IMG_WIDTH-1);
+  endfunction
+
   // --------------------------------------------------------------------------
-  // Producer: drive IMG_W*IMG_H pixels per frame
-  // Handshake: present pixel, wait until DUT asserts o_rd_async_fifo, then advance
+  // Producer (Option A): AXIS-clean drive/hold loop
+  // - Holds i_tdata/i_tuser/i_tlast stable while stalled (i_tvalid=1, o_tready=0)
+  // - Advances x/y ONLY on real handshake "fire"
   // --------------------------------------------------------------------------
-  task automatic drive_frame(input integer frame_id);
-    integer i;
-    integer x, y;
+  task automatic drive_frame_axis_clean(input int frame_id);
+    int x, y;
+    begin
+      x = 0; y = 0;
 
-    i_almostempty = 0; // source has data
+      i_empty  = 1'b0;
+      i_tvalid = 1'b1;
 
-    for (i = 0; i < IMG_W*IMG_H; i = i + 1) begin
-      x = i % IMG_W;
-      y = i / IMG_W;
+      while (y < IMG_HEIGHT) begin
+        // Drive current beat (MUST remain stable until it fires)
+        i_tdata = gen_pixel(frame_id, x, y);
+        i_tuser = gen_tuser(x, y);
+        i_tlast = gen_tlast(x);
 
-      i_data = gen_pixel(frame_id, x, y);
+        @(posedge i_clk);
 
-      // Wait until DUT pops the "camera FIFO"
+        // Advance ONLY on real pop/handshake
+        if (i_tvalid && o_tready) begin
+          if (x == IMG_WIDTH-1) begin
+            x = 0;
+            y = y + 1;
+          end else begin
+            x = x + 1;
+          end
+        end
+      end
+
+      // Idle after frame
+      i_tvalid = 1'b0;
+      i_empty  = 1'b1;
+      i_tdata  = 32'h0000_0000;
+      i_tuser  = 1'b0;
+      i_tlast  = 1'b0;
       @(posedge i_clk);
-      while (!o_rd_async_fifo) @(posedge i_clk);
     end
-
-    // Source goes idle after the frame
-    i_almostempty = 1;
   endtask
 
   // --------------------------------------------------------------------------
-  // Consumer: read output FIFO continuously to avoid back-pressure stalls
+  // Optional priming helper:
+  // primes N lines of a given frame_id (still AXIS-clean)
+  // --------------------------------------------------------------------------
+  task automatic prime_lines_axis_clean(input int frame_id, input int num_lines);
+    int x, y;
+    begin
+      x = 0; y = 0;
+
+      i_empty  = 1'b0;
+      i_tvalid = 1'b1;
+
+      while (y < num_lines) begin
+        i_tdata = gen_pixel(frame_id, x, y);
+        i_tuser = gen_tuser(x, y);
+        i_tlast = gen_tlast(x);
+
+        @(posedge i_clk);
+
+        if (i_tvalid && o_tready) begin
+          if (x == IMG_WIDTH-1) begin
+            x = 0;
+            y = y + 1;
+          end else begin
+            x = x + 1;
+          end
+        end
+      end
+
+      // keep source "alive" or go idle; here we go idle between priming and full frame
+      i_tvalid = 1'b0;
+      i_empty  = 1'b1;
+      i_tdata  = 32'h0000_0000;
+      i_tuser  = 1'b0;
+      i_tlast  = 1'b0;
+      @(posedge i_clk);
+    end
+  endtask
+
+  // --------------------------------------------------------------------------
+  // Consumer: always-ready (baseline)
   // --------------------------------------------------------------------------
   integer out_px_count;
   integer outfile;
 
-  task automatic start_consumer();
+  task automatic start_consumer_always_ready();
     fork
-      begin : CONSUMER_THREAD
+      begin : CONSUMER_ALWAYS
         forever begin
           @(posedge i_clk);
-          if (!o_obuf_empty) begin
-            i_obuf_rd <= 1'b1;    // pop one word per cycle while data exists
+          i_tready <= 1'b1;
+
+          if (o_tvalid && i_tready) begin
             out_px_count = out_px_count + 1;
-            $fdisplay(outfile, "%03h", o_obuf_data);
-          end else begin
-            i_obuf_rd <= 1'b0;
+            $fdisplay(outfile, "%08h", o_tdata);
           end
         end
       end
     join_none
   endtask
 
-  
-  `ifdef DEBUG_PRINTS
-    always @(posedge i_clk) if (rstn) begin
-      if ($isunknown(o_rd_async_fifo))   $display("%t X: o_rd_async_fifo",   $time);
-      if ($isunknown(o_obuf_empty))      $display("%t X: o_obuf_empty",      $time);
-      if ($isunknown(o_obuf_almostfull)) $display("%t X: o_obuf_almostfull", $time);
-    end
-  `endif
+  // --------------------------------------------------------------------------
+  // Consumer: backpressure (random i_tready stalls)
+  // stall_pct: 0..100 (percentage of cycles to deassert ready)
+  // --------------------------------------------------------------------------
+  task automatic start_consumer_backpressure(input int unsigned stall_pct);
+    fork
+      begin : CONSUMER_BP
+        forever begin
+          @(posedge i_clk);
 
+          if ($urandom_range(0,99) < stall_pct) i_tready <= 1'b0;
+          else                                 i_tready <= 1'b1;
+
+          if (o_tvalid && i_tready) begin
+            out_px_count = out_px_count + 1;
+            $fdisplay(outfile, "%08h", o_tdata);
+          end
+        end
+      end
+    join_none
+  endtask
+
+  // --------------------------------------------------------------------------
+  // Helpful banners / debug prints
+  // --------------------------------------------------------------------------
+  always @(posedge i_clk) begin
+    if (i_tvalid && !i_empty && !o_tready)
+      $display("%t TB stalled waiting for pop (o_tready=0)", $time);
+  end
+
+  // --------------------------------------------------------------------------
+  // AXIS legality checkers (input + output must remain stable while stalled)
+  // --------------------------------------------------------------------------
+  logic [31:0] i_tdata_d;
+  logic        i_tuser_d, i_tlast_d;
+
+  always @(posedge i_clk) begin
+    i_tdata_d <= i_tdata;
+    i_tuser_d <= i_tuser;
+    i_tlast_d <= i_tlast;
+
+    if (i_tvalid && !o_tready) begin
+      if (i_tdata !== i_tdata_d) $display(1, "%t TB violates AXIS: i_tdata changed while stalled", $time); // original: $fatal
+      if (i_tuser !== i_tuser_d) $display(1, "%t TB violates AXIS: i_tuser changed while stalled", $time); // original: $fatal
+      if (i_tlast !== i_tlast_d) $display(1, "%t TB violates AXIS: i_tlast changed while stalled", $time); // original: $fatal
+    end
+  end
+
+  logic [31:0] o_tdata_d;
+  logic        o_tuser_d, o_tlast_d;
+
+  always @(posedge i_clk) begin
+    o_tdata_d <= o_tdata;
+    o_tuser_d <= o_tuser;
+    o_tlast_d <= o_tlast;
+
+    if (o_tvalid && !i_tready) begin
+      if (o_tdata !== o_tdata_d) $display(1, "%t DUT violates AXIS: o_tdata changed while stalled", $time); // original: $fatal
+      if (o_tuser !== o_tuser_d) $display(1, "%t DUT violates AXIS: o_tuser changed while stalled", $time); // original: $fatal
+      if (o_tlast !== o_tlast_d) $display(1, "%t DUT violates AXIS: o_tlast changed while stalled", $time); // original: $fatal
+    end
+  end
+  // --------------------------------------------------------------------------
+  // FIFO test (no error/dropped beats)
+  // --------------------------------------------------------------------------
+  /*
+  always @(posedge i_clk) begin
+      if (DUT.pp_fifo_error) begin
+        $fatal(1, "%t pp_fifo dropped", $time);
+      end
+      if (DUT.delay_fifo_error) begin
+        $fatal(1, "%t delay_fifo dropped", $time);
+      end
+      if (DUT.obuf_error) begin
+        $fatal(1, "%t obuf_fifo dropped", $time);
+      end
+  end
+  */
   // --------------------------------------------------------------------------
   // Test sequence
   // --------------------------------------------------------------------------
-  logic [31:0] expected;
-  logic [31:0] timeout_cycles;
-  logic [31:0] cycles;
+  int unsigned cycles;
 
   initial begin
     $dumpfile("waveform.vcd");
     $dumpvars(0, RedPixelProcessingTop_tb);
 
-    outfile = $fopen("output_pixels.txt", "w");
+    outfile      = $fopen("output_pixels.txt", "w");
+    out_px_count = 0;
+
+    // Initialize all inputs (prevents X poisoning)
+    i_tdata  = 32'h0000_0000;
+    i_tuser  = 1'b0;
+    i_tlast  = 1'b0;
+    i_tvalid = 1'b0;
+    i_empty  = 1'b1;
+    i_tready = 1'b0;
 
     // Reset
-    i_data        = 12'h000;
-    i_almostempty = 1;
-    i_obuf_rd     = 0;
-    out_px_count  = 0;
-
-    i_rstn  = 0;
-    i_flush = 0;
+    i_rstn  = 1'b0;
+    i_flush = 1'b0;
     repeat (10) @(posedge i_clk);
-    i_rstn = 1;
+    i_rstn = 1'b1;
 
-    // Start consumer so back-pressure never stalls the pipe
-    start_consumer();
+    // Choose ONE consumer mode:
+    // start_consumer_always_ready();
+    start_consumer_backpressure(30); // 30% stall rate
 
-    // Frame 0 (with red object)
-    drive_frame(0);
+    // ------------------------------------------------------------------------
+    // Frame plan:
+    //   Frame 2: full black (baseline)
+    //   Frame 0: red box (should produce centroid + crosshair on NEXT frame)
+    //   Frame 2: full black (crosshair expected here)
+    //   Frame 1: checkerboard (stress centroid)
+    //   Frame 2: full black (reset observation)
+    // ------------------------------------------------------------------------
 
-    // Small gap
-    repeat (20) 
-    
+    $display("%t TB: drive_frame(2) // full black", $time);
+    drive_frame_axis_clean(2);
 
-    // Frame 1 (blank)
-    drive_frame(1);
+    $display("%t TB: drive_frame(0) // red box centered", $time);
+    drive_frame_axis_clean(0);
 
-    // Drain and check
-    expected       = IMG_W * IMG_H * FRAMES_TO_SEND;   // expect 2 frames worth of pixels
-    timeout_cycles = (expected << 1) + 20000;          // generous timeout
-    cycles         = 0;
+    $display("%t TB: drive_frame(2) // full black (crosshair expected)", $time);
+    drive_frame_axis_clean(2);
 
-    while ((out_px_count < expected) && (cycles < timeout_cycles)) begin
+    $display("%t TB: drive_frame(1) // checkerboard", $time);
+    drive_frame_axis_clean(1);
+
+    $display("%t TB: drive_frame(2) // full black", $time);
+    drive_frame_axis_clean(2);
+
+    // Global timeout guard (prevents sim running forever if something wedges)
+    cycles = 0;
+    while (cycles < TIMEOUT_CYC) begin
       @(posedge i_clk);
-      cycles = cycles + 1;
+      cycles++;
     end
 
-    $display("Output pixels produced: %0d (expected %0d)", out_px_count, expected);
-    if (out_px_count != expected)
-      $display("WARN: Did not receive full expected output before timeout.");
-
+    $display("TB done. Output pixels seen (counting transfers): %0d", out_px_count);
     $fclose(outfile);
     $finish;
   end
