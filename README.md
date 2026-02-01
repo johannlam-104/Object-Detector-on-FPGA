@@ -1,7 +1,7 @@
 # Red-Object-Detector-on-FPGA-Using-OV7670-Camera-and-VGA-Output
 The aim for this project is to detect a red object and overlay a green crosshair over ov7670 camera feed, and be displayed on a VGA monitor
 
-## This project builds on the open sourced HDMI video pipeline project linked [here](https://github.com/georgeyhere/FPGA-Video-Processing/tree/master). My modifications focused on real-time red object detection logic with the addition of a couple minor changes to open sourced modules
+## This project builds on the open sourced HDMI video pipeline project linked [here](https://github.com/georgeyhere/FPGA-Video-Processing/tree/master). My modifications focused on real-time red object detection logic
 
 ## Block Diagrams
 
@@ -13,7 +13,7 @@ The aim for this project is to detect a red object and overlay a green crosshair
   <img width="863" height="398" alt="image" src="https://github.com/user-attachments/assets/b5ec4725-845f-411c-bbf8-6b2e76755f35" />
 
 ## Camera module (open sourced)
-## modifications: implemented AXI-Stream output
+## modifications: implemented AXI-Stream output and TLAST/TUSER metadata generation
 <img width="1117" height="618" alt="image" src="https://github.com/user-attachments/assets/bbcfe919-c518-4c60-bc8f-36ba054f5f2a" />
 
 ## System Level Top
@@ -21,4 +21,8 @@ The aim for this project is to detect a red object and overlay a green crosshair
 
 ## Video Demo (Version 1.0)
 https://youtu.be/ILm-690KBs4 
-# will add ping pong buffering on the framebuffer CDC boundary to get rid of display shearing 
+# working on VDMA bring up for full resolution buffering without shearing
+
+## Block design (processing core is undergoing stress testing)
+<img width="2266" height="1081" alt="image" src="https://github.com/user-attachments/assets/c73ce89f-2056-4e37-9c50-76a9d5ad6fe2" />
+
