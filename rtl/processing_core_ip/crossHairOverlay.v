@@ -74,8 +74,6 @@ module crossHairOverlay #(
     
     // -----------------------------
     // Next-state logic (FSM)
-    // IMPORTANT: drive transitions off *accepted beats* (in_fire),
-    // except for purely sideband captures.
     // -----------------------------
     always @* begin
       next_state    = state;
