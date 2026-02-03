@@ -55,8 +55,7 @@ module centroidCalc #(
     wire last_x = (x_counter == IMG_WIDTH-1);
     wire last_y = (y_counter == IMG_HEIGHT-1);
 
-    // You wanted early publish relative to "end-of-frame".
-    // BUT do not key this off free-running counters; key it off accepted beats.
+    // early to account for pending period in overlay
     wire publish = fire && (y_counter == IMG_HEIGHT-1) && (x_counter == IMG_WIDTH-1-5);
 
     always @(posedge i_clk) begin
@@ -77,7 +76,7 @@ module centroidCalc #(
         end
     end
 
-    // your bbox accumulators: also gate with fire
+    //  bbox accumulators: also gate with fire
     reg [18:0] red_pixel_counter;
     reg [XW-1:0] closest_x, furthest_x;
     reg [YW-1:0] closest_y, furthest_y;
