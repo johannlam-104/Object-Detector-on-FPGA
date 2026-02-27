@@ -24,5 +24,6 @@ https://youtu.be/ILm-690KBs4
 # working on VDMA bring up for full resolution buffering without shearing
 
 ## Block design (processing core is undergoing stress testing)
-<img width="2260" height="907" alt="image" src="https://github.com/user-attachments/assets/84a43bb2-9aee-4ea1-983a-0712462a2154" />
+<img width="2267" height="1099" alt="image" src="https://github.com/user-attachments/assets/15cb0c02-cf0c-4d6d-b730-c532b4a3d810" />
+
 
