@@ -1,6 +1,9 @@
 # Red-Object-Detector-on-FPGA-Using-OV7670-Camera-and-VGA-Output
 The aim for this project is to detect a red object and overlay a green crosshair over ov7670 camera feed, and be displayed on a VGA monitor
 
+## Live Hardware Demo
+https://youtu.be/-TX4hx-_ViQ 
+
 ## This project builds on the open sourced HDMI video pipeline project linked [here](https://github.com/georgeyhere/FPGA-Video-Processing/tree/master). My modifications focused on real-time red object detection logic and frame buffering
 
 ## Block Diagrams
