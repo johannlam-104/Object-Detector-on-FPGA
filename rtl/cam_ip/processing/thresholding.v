@@ -4,7 +4,7 @@
 // accumulates metadata into the same data bus
 // input: {RGB444, 20'b0} -> output {RGB444, pixel_is_red, 10'b(x-coor), 9'b(y-coor)}
 //////////////////////////////////////////////////////////////////////////////////
-// my version
+
 
 module thresholding(
     input wire          i_clk,
